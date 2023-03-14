@@ -1,0 +1,154 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Template for creating Dynamodb and its backing S3 bucket'
+Parameters:
+  HashKeyElementName:
+    Description: HashType PrimaryKey Name
+    Type: String
+    AllowedPattern: '[a-zA-Z0-9]*'
+    MinLength: '1'
+    MaxLength: '2048'
+    ConstraintDescription: must contain only alphanumberic characters
+  HashKeyElementType:
+    Description: HashType PrimaryKey Type
+    Type: String
+    Default: S
+    AllowedPattern: '[S|N]'
+    MinLength: '1'
+    MaxLength: '1'
+    ConstraintDescription: must be either S or N
+  ReadCapacityUnits:
+    Description: Provisioned read throughput
+    Type: Number
+    Default: '5'
+    MinValue: '5'
+    MaxValue: '10000'
+    ConstraintDescription: must be between 5 and 10000
+  WriteCapacityUnits:
+    Description: Provisioned write throughput
+    Type: Number
+    Default: '10'
+    MinValue: '5'
+    MaxValue: '10000'
+    ConstraintDescription: must be between 5 and 10000
+  BackupBucketName:
+    Type: String
+    Default: receeve-dynamodb-backup
+  DynamoDBTableName:
+    Type: String
+    Default: Student
+Resources:
+  # RootRole:
+  #   Type: 'AWS::IAM::Role'
+  #   Properties:
+  #     AssumeRolePolicyDocument:
+  #       Version: '2012-10-17'
+  #       Statement:
+  #         - Effect: Allow
+  #           Principal:
+  #             Service:
+  #               - ec2.amazonaws.com
+  #           Action:
+  #             - 'sts:AssumeRole'
+  #     Path: /
+  #     ManagedPolicyArns:
+  #       - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+  #       - arn:aws:iam::aws:policy/AmazonS3FullAccess
+
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BackupBucketName
+
+  DynamoDbTable:
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      TableName: !Ref DynamoDBTableName
+      AttributeDefinitions:
+      - AttributeName: !Ref 'HashKeyElementName'
+        AttributeType: !Ref 'HashKeyElementType'
+      KeySchema:
+      - AttributeName: !Ref 'HashKeyElementName'
+        KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: !Ref 'ReadCapacityUnits'
+        WriteCapacityUnits: !Ref 'WriteCapacityUnits'
+
+  BackupLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: dynamodb-backup
+      Runtime: python3.9
+      Role: !GetAtt LambdaRole.Arn
+      Handler: lambda_function.lambda_handler
+      Timeout: 10
+      Code:
+        S3Bucket: !ImportValue CodeBucketName
+        S3Key: backup-lambda.zip
+      Environment:
+        Variables:
+          BACKUP_BUCKET: !Ref BackupBucket
+          DYNAMODB_TABLE: !Ref DynamoDbTable
+
+  # BackupLambda:
+  #   Type: AWS::Lambda::Function
+  #   Properties:
+  #     FunctionName: dynamodb-backup
+  #     Runtime: nodejs16.x
+  #     Role: !GetAtt LambdaRole.Arn
+  #     Handler: index.handler
+  #     Timeout: 10
+  #     Code:
+  #       S3Bucket: !Ref LambdaCodeBucket
+  #       S3Key: backup-lambda.zip
+  #     Environment:
+  #       Variables:
+  #         BACKUP_BUCKET: !Ref BackupBucket
+  #         DYNAMODB_TABLE: !Ref DynamoDbTable
+
+  LambdaRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service: 'lambda.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      Path: '/'
+      Policies:
+        - PolicyName: CloudWatchCreateLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: !Sub "arn:aws:logs:region:${AWS::AccountId}:log-group:/aws/lambda/dynamodb-backup:*"
+              - Effect: Allow
+                Action:
+                  - "logs:CreateLogGroup"
+                Resource: !Sub "arn:aws:logs:region:${AWS::AccountId}:*"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+
+  EventBridgeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: DYNAMODB-BACKUP-EventBridgeRule
+      Description: "Trigger backup lambda @ 2:00 AM everyday"
+      ScheduleExpression: "cron(20 22 * * ? *)" # Runs every day at 2:00 AM UTC
+      State: "ENABLED"
+      Targets:
+        - Arn: !GetAtt BackupLambda.Arn
+          Id: "MyLambdaFunctionTarget"
+
+  MyLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref BackupLambda
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt EventBridgeRule.Arn

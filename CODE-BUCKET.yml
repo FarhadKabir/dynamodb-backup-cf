@@ -1,0 +1,14 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Template for creating Dynamodb and its backing S3 bucket'
+Resources:
+  LambdaCodeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: receeve-lambda-code-bucket
+
+Outputs:
+  LambdaCodeBucketName:
+    Description: Bucket for hosting lamda package
+    Value: !Ref LambdaCodeBucket
+    Export:
+      Name: CodeBucketName
